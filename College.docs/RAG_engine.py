@@ -1,9 +1,11 @@
+
 import faiss
 import numpy as np
 from groq import Groq
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
+
 
 # Load PDFs
 def load_pdf(pdf_path):
@@ -51,13 +53,16 @@ def build_vectors(chunks, model_name="sentence-transformers/all-MiniLM-L6-v2"):
     return index, embed_model
 
 
-# Call load PDF, chunk, embedding
+# Load PDF, chunk, embedding
 def load_base(pdf_path="College_docs"):
     chunks = []
 
     for pdf in Path(pdf_path).glob("*.pdf"):
         full_text = load_pdf(pdf)
         chunks.extend(create_chunks(full_text))
+
+    if not chunks:
+        raise ValueError("No PDF documents found or no readable text in PDFs")
 
     index, embed_model = build_vectors(chunks)
 
@@ -94,9 +99,7 @@ def retrieve_content(question, embed_model, chunks, index, num_chunks=3):
 def ask_rag(question, embed_model, chunks, index, api_key, num_chunks=3,
             model_name="openai/gpt-oss-120b"):
 
-    key = api_key
-
-    if not key:
+    if not api_key:
         raise ValueError("API key Missing")
 
     background = retrieve_content(
@@ -116,7 +119,7 @@ User question:
 
 Answer:"""
 
-    client = Groq(api_key=key)
+    client = Groq(api_key=api_key)
 
     response = client.chat.completions.create(
         model=model_name,
