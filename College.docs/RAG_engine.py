@@ -1,3 +1,4 @@
+
 import faiss
 import numpy as np
 from groq import Groq
@@ -9,17 +10,22 @@ from pathlib import Path
 # Load PDFs
 def load_pdf(pdf_path):
     reader = PdfReader(str(pdf_path))
-    mypages = [i.extract_text() or "" for i in reader.pages]
+
+    mypages = [page.extract_text() or "" for page in reader.pages]
     full_text = "\n".join(mypages).strip()
 
     if not full_text:
-        raise ValueError("No readable Text Found")
+        raise ValueError(f"No readable text found in {pdf_path}")
 
     return full_text
 
 
 # Chunking
 def create_chunks(full_text, chunksize=500, overlap=100):
+
+    if overlap >= chunksize:
+        raise ValueError("Overlap must be smaller than chunk size")
+
     chunks = []
     start = 0
 
@@ -37,31 +43,53 @@ def create_chunks(full_text, chunksize=500, overlap=100):
 
 # Embedding
 def build_vectors(chunks, model_name="sentence-transformers/all-MiniLM-L6-v2"):
+
     if not chunks:
-        raise ValueError("Cannot apply embedding without chunks")
+        raise ValueError("Cannot create embeddings without chunks")
 
     embed_model = SentenceTransformer(model_name)
-    embed_vectors = embed_model.encode(chunks, convert_to_numpy=True)
+
+    embed_vectors = embed_model.encode(
+        chunks,
+        convert_to_numpy=True
+    )
+
     embed_vectors = np.asarray(embed_vectors, dtype="float32")
 
     faiss.normalize_L2(embed_vectors)
 
     index = faiss.IndexFlatIP(embed_vectors.shape[1])
+
     index.add(embed_vectors)
 
     return index, embed_model
 
 
-# Load PDF, chunk, embedding
+# Load PDF, chunk and embedding
 def load_base(pdf_path="College_docs"):
+
     chunks = []
 
-    for pdf in Path(pdf_path).glob("*.pdf"):
+    folder = Path(pdf_path)
+
+    if not folder.exists():
+        raise FileNotFoundError(f"Folder not found: {pdf_path}")
+
+    pdf_files = list(folder.glob("*.pdf"))
+
+    if not pdf_files:
+        raise ValueError("No PDF files found in College_docs folder")
+
+    for pdf in pdf_files:
+
         full_text = load_pdf(pdf)
-        chunks.extend(create_chunks(full_text))
+
+        pdf_chunks = create_chunks(full_text)
+
+        chunks.extend(pdf_chunks)
 
     if not chunks:
-        raise ValueError("No PDF documents found or no readable text in PDFs")
+        raise ValueError("No readable text found in PDF documents")
 
     index, embed_model = build_vectors(chunks)
 
@@ -70,24 +98,34 @@ def load_base(pdf_path="College_docs"):
 
 # Retrieve
 def retrieve_content(question, embed_model, chunks, index, num_chunks=3):
+
     if not question.strip():
         raise ValueError("Question cannot be blank")
 
     if num_chunks < 1:
-        raise ValueError("Request at least one or more chunks")
+        raise ValueError("Request at least one chunk")
 
-    query_embed = embed_model.encode([question], convert_to_numpy=True)
+    if index.ntotal == 0:
+        raise ValueError("FAISS index is empty")
+
+    query_embed = embed_model.encode(
+        [question],
+        convert_to_numpy=True
+    )
+
     query_embed = np.asarray(query_embed, dtype="float32")
 
     faiss.normalize_L2(query_embed)
 
     sim_scores, vec_indices = index.search(
-        query_embed, min(num_chunks, len(chunks))
+        query_embed,
+        min(num_chunks, index.ntotal)
     )
 
     background = ""
 
     for i in vec_indices[0]:
+
         if i != -1:
             background += chunks[i] + "\n\n"
 
@@ -95,20 +133,33 @@ def retrieve_content(question, embed_model, chunks, index, num_chunks=3):
 
 
 # Ask
-def ask_rag(question, embed_model, chunks, index, api_key, num_chunks=3,
-            model_name="openai/gpt-oss-120b"):
+def ask_rag(
+    question,
+    embed_model,
+    chunks,
+    index,
+    api_key,
+    num_chunks=3,
+    model_name="openai/gpt-oss-120b"
+):
 
     if not api_key:
-        raise ValueError("API key Missing")
+        raise ValueError("Groq API key is missing")
 
     background = retrieve_content(
-        question, embed_model, chunks, index, num_chunks
+        question,
+        embed_model,
+        chunks,
+        index,
+        num_chunks
     )
 
     prompt = """You are a professional AI assistant.
+
 Answer the user's question using only the document background below.
 Do not invent or assume facts.
-If information is not available, simply say "Information missing from the document."
+If information is not available, simply say:
+"Information missing from the document."
 
 Document background:
 """ + background + """
